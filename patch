@@ -1,0 +1,2006 @@
+--- Makefile.fips	2015-11-16 13:45:15.000000000 -0800
++++ Makefile.fips	2017-06-13 09:31:10.000000000 -0700
+@@ -297,7 +297,7 @@
+ 	../crypto/bn/bn_shift.o \
+ 	../crypto/bn/bn_sqr.o \
+ 	../crypto/bn/bn_word.o \
+-	../crypto/bn/bn_x931p.o \
++	../crypto/bn/bn_fips_prime.o \
+ 	../crypto/buffer/buf_str.o \
+ 	../crypto/cmac/cmac.o \
+ 	../crypto/cryptlib.o \
+@@ -351,7 +351,7 @@
+ 	../crypto/rsa/rsa_pss.o \
+ 	../crypto/rsa/rsa_ssl.o \
+ 	../crypto/rsa/rsa_x931.o \
+-	../crypto/rsa/rsa_x931g.o \
++	../crypto/rsa/rsa_fips_gen.o \
+ 	../crypto/sha/sha1dgst.o \
+ 	../crypto/sha/sha256.o \
+ 	../crypto/sha/sha512.o \
+--- crypto/fips_err.h	2015-11-16 13:45:19.000000000 -0800
++++ crypto/fips_err.h	2017-06-13 09:31:10.000000000 -0700
+@@ -136,7 +136,7 @@
+ {ERR_FUNC(FIPS_F_RSA_EAY_PRIVATE_ENCRYPT),	"RSA_EAY_PRIVATE_ENCRYPT"},
+ {ERR_FUNC(FIPS_F_RSA_EAY_PUBLIC_DECRYPT),	"RSA_EAY_PUBLIC_DECRYPT"},
+ {ERR_FUNC(FIPS_F_RSA_EAY_PUBLIC_ENCRYPT),	"RSA_EAY_PUBLIC_ENCRYPT"},
+-{ERR_FUNC(FIPS_F_RSA_X931_GENERATE_KEY_EX),	"RSA_X931_generate_key_ex"},
++{ERR_FUNC(FIPS_F_RSA_FIPS_GENERATE_KEY_EX),	"RSA_fips_generate_key_ex"},
+ {0,NULL}
+ 	};
+ 
+--- crypto/bn/bn_x931p.c	2015-11-16 13:45:17.000000000 -0800
++++ crypto/bn/bn_x931p.c	1969-12-31 16:00:00.000000000 -0800
+@@ -1,272 +0,0 @@
+-/* bn_x931p.c */
+-/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
+- * project 2005.
+- */
+-/* ====================================================================
+- * Copyright (c) 2005 The OpenSSL Project.  All rights reserved.
+- *
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- *
+- * 1. Redistributions of source code must retain the above copyright
+- *    notice, this list of conditions and the following disclaimer. 
+- *
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in
+- *    the documentation and/or other materials provided with the
+- *    distribution.
+- *
+- * 3. All advertising materials mentioning features or use of this
+- *    software must display the following acknowledgment:
+- *    "This product includes software developed by the OpenSSL Project
+- *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
+- *
+- * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
+- *    endorse or promote products derived from this software without
+- *    prior written permission. For written permission, please contact
+- *    licensing@OpenSSL.org.
+- *
+- * 5. Products derived from this software may not be called "OpenSSL"
+- *    nor may "OpenSSL" appear in their names without prior written
+- *    permission of the OpenSSL Project.
+- *
+- * 6. Redistributions of any form whatsoever must retain the following
+- *    acknowledgment:
+- *    "This product includes software developed by the OpenSSL Project
+- *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
+- *
+- * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
+- * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+- * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
+- * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+- * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+- * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+- * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
+- * OF THE POSSIBILITY OF SUCH DAMAGE.
+- * ====================================================================
+- *
+- * This product includes cryptographic software written by Eric Young
+- * (eay@cryptsoft.com).  This product includes software written by Tim
+- * Hudson (tjh@cryptsoft.com).
+- *
+- */
+-
+-#include <stdio.h>
+-#include <openssl/bn.h>
+-
+-/* X9.31 routines for prime derivation */
+-
+-/* X9.31 prime derivation. This is used to generate the primes pi
+- * (p1, p2, q1, q2) from a parameter Xpi by checking successive odd
+- * integers.
+- */
+-
+-static int bn_x931_derive_pi(BIGNUM *pi, const BIGNUM *Xpi, BN_CTX *ctx,
+-			BN_GENCB *cb)
+-	{
+-	int i = 0;
+-	if (!BN_copy(pi, Xpi))
+-		return 0;
+-	if (!BN_is_odd(pi) && !BN_add_word(pi, 1))
+-		return 0;
+-	for(;;)
+-		{
+-		i++;
+-		BN_GENCB_call(cb, 0, i);
+-		/* NB 27 MR is specificed in X9.31 */
+-		if (BN_is_prime_fasttest_ex(pi, 27, ctx, 1, cb))
+-			break;
+-		if (!BN_add_word(pi, 2))
+-			return 0;
+-		}
+-	BN_GENCB_call(cb, 2, i);
+-	return 1;
+-	}
+-
+-/* This is the main X9.31 prime derivation function. From parameters
+- * Xp1, Xp2 and Xp derive the prime p. If the parameters p1 or p2 are
+- * not NULL they will be returned too: this is needed for testing.
+- */
+-
+-int BN_X931_derive_prime_ex(BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
+-			const BIGNUM *Xp, const BIGNUM *Xp1, const BIGNUM *Xp2,
+-			const BIGNUM *e, BN_CTX *ctx, BN_GENCB *cb)
+-	{
+-	int ret = 0;
+-
+-	BIGNUM *t, *p1p2, *pm1;
+-
+-	/* Only even e supported */
+-	if (!BN_is_odd(e))
+-		return 0;
+-
+-	BN_CTX_start(ctx);
+-	if (!p1)
+-		p1 = BN_CTX_get(ctx);
+-
+-	if (!p2)
+-		p2 = BN_CTX_get(ctx);
+-
+-	t = BN_CTX_get(ctx);
+-
+-	p1p2 = BN_CTX_get(ctx);
+-
+-	pm1 = BN_CTX_get(ctx);
+-
+-	if (!bn_x931_derive_pi(p1, Xp1, ctx, cb))
+-		goto err;
+-
+-	if (!bn_x931_derive_pi(p2, Xp2, ctx, cb))
+-		goto err;
+-
+-	if (!BN_mul(p1p2, p1, p2, ctx))
+-		goto err;
+-
+-	/* First set p to value of Rp */
+-
+-	if (!BN_mod_inverse(p, p2, p1, ctx))
+-		goto err;
+-
+-	if (!BN_mul(p, p, p2, ctx))
+-		goto err;
+-
+-	if (!BN_mod_inverse(t, p1, p2, ctx))
+-		goto err;
+-
+-	if (!BN_mul(t, t, p1, ctx))
+-		goto err;
+-
+-	if (!BN_sub(p, p, t))
+-		goto err;
+-
+-	if (p->neg && !BN_add(p, p, p1p2))
+-		goto err;
+-
+-	/* p now equals Rp */
+-
+-	if (!BN_mod_sub(p, p, Xp, p1p2, ctx))
+-		goto err;
+-
+-	if (!BN_add(p, p, Xp))
+-		goto err;
+-
+-	/* p now equals Yp0 */
+-
+-	for (;;)
+-		{
+-		int i = 1;
+-		BN_GENCB_call(cb, 0, i++);
+-		if (!BN_copy(pm1, p))
+-			goto err;
+-		if (!BN_sub_word(pm1, 1))
+-			goto err;
+-		if (!BN_gcd(t, pm1, e, ctx))
+-			goto err;
+-		if (BN_is_one(t)
+-		/* X9.31 specifies 8 MR and 1 Lucas test or any prime test
+-		 * offering similar or better guarantees 50 MR is considerably 
+-		 * better.
+-		 */
+-			&& BN_is_prime_fasttest_ex(p, 50, ctx, 1, cb))
+-			break;
+-		if (!BN_add(p, p, p1p2))
+-			goto err;
+-		}
+-
+-	BN_GENCB_call(cb, 3, 0);
+-
+-	ret = 1;
+-
+-	err:
+-
+-	BN_CTX_end(ctx);
+-
+-	return ret;
+-	}
+-
+-/* Generate pair of paramters Xp, Xq for X9.31 prime generation.
+- * Note: nbits paramter is sum of number of bits in both.
+- */
+-
+-int BN_X931_generate_Xpq(BIGNUM *Xp, BIGNUM *Xq, int nbits, BN_CTX *ctx)
+-	{
+-	BIGNUM *t;
+-	int i;
+-	/* Number of bits for each prime is of the form
+-	 * 512+128s for s = 0, 1, ...
+-	 */
+-	if ((nbits < 1024) || (nbits & 0xff))
+-		return 0;
+-	nbits >>= 1;
+-	/* The random value Xp must be between sqrt(2) * 2^(nbits-1) and
+-	 * 2^nbits - 1. By setting the top two bits we ensure that the lower
+-	 * bound is exceeded.
+-	 */
+-	if (!BN_rand(Xp, nbits, 1, 0))
+-		return 0;
+-
+-	BN_CTX_start(ctx);
+-	t = BN_CTX_get(ctx);
+-
+-	for (i = 0; i < 1000; i++)
+-		{
+-		if (!BN_rand(Xq, nbits, 1, 0))
+-			return 0;
+-		/* Check that |Xp - Xq| > 2^(nbits - 100) */
+-		BN_sub(t, Xp, Xq);
+-		if (BN_num_bits(t) > (nbits - 100))
+-			break;
+-		}
+-
+-	BN_CTX_end(ctx);
+-
+-	if (i < 1000)
+-		return 1;
+-
+-	return 0;
+-
+-	}
+-
+-/* Generate primes using X9.31 algorithm. Of the values p, p1, p2, Xp1
+- * and Xp2 only 'p' needs to be non-NULL. If any of the others are not NULL
+- * the relevant parameter will be stored in it.
+- *
+- * Due to the fact that |Xp - Xq| > 2^(nbits - 100) must be satisfied Xp and Xq
+- * are generated using the previous function and supplied as input.
+- */
+-
+-int BN_X931_generate_prime_ex(BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
+-			BIGNUM *Xp1, BIGNUM *Xp2,
+-			const BIGNUM *Xp,
+-			const BIGNUM *e, BN_CTX *ctx,
+-			BN_GENCB *cb)
+-	{
+-	int ret = 0;
+-
+-	BN_CTX_start(ctx);
+-	if (!Xp1)
+-		Xp1 = BN_CTX_get(ctx);
+-	if (!Xp2)
+-		Xp2 = BN_CTX_get(ctx);
+-
+-	if (!BN_rand(Xp1, 101, 0, 0))
+-		goto error;
+-	if (!BN_rand(Xp2, 101, 0, 0))
+-		goto error;
+-	if (!BN_X931_derive_prime_ex(p, p1, p2, Xp, Xp1, Xp2, e, ctx, cb))
+-		goto error;
+-
+-	ret = 1;
+-
+-	error:
+-	BN_CTX_end(ctx);
+-
+-	return ret;
+-
+-	}
+-
+--- crypto/bn/bn_fips_prime.c	1969-12-31 16:00:00.000000000 -0800
++++ crypto/bn/bn_fips_prime.c	2017-06-13 09:31:10.000000000 -0700
+@@ -0,0 +1,331 @@
++/* bn_fips_prime.c 
++ * Based on bn_x931p.c
++ * Modified by Mehdi Sotoodeh (mehdisotoodeh@gmail.com) for FIPS186-4
++ * Section B.3.6 compliance. Nov, 2014.
++ */
++/* bn_x931p.c */
++/* Written by Dr Stephen N Henson (steve@openssl.org) for the OpenSSL
++ * project 2005.
++ */
++/* ====================================================================
++ * Copyright (c) 2005 The OpenSSL Project.  All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ *
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer. 
++ *
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in
++ *    the documentation and/or other materials provided with the
++ *    distribution.
++ *
++ * 3. All advertising materials mentioning features or use of this
++ *    software must display the following acknowledgment:
++ *    "This product includes software developed by the OpenSSL Project
++ *    for use in the OpenSSL Toolkit. (http://www.OpenSSL.org/)"
++ *
++ * 4. The names "OpenSSL Toolkit" and "OpenSSL Project" must not be used to
++ *    endorse or promote products derived from this software without
++ *    prior written permission. For written permission, please contact
++ *    licensing@OpenSSL.org.
++ *
++ * 5. Products derived from this software may not be called "OpenSSL"
++ *    nor may "OpenSSL" appear in their names without prior written
++ *    permission of the OpenSSL Project.
++ *
++ * 6. Redistributions of any form whatsoever must retain the following
++ *    acknowledgment:
++ *    "This product includes software developed by the OpenSSL Project
++ *    for use in the OpenSSL Toolkit (http://www.OpenSSL.org/)"
++ *
++ * THIS SOFTWARE IS PROVIDED BY THE OpenSSL PROJECT ``AS IS'' AND ANY
++ * EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
++ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE OpenSSL PROJECT OR
++ * ITS CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
++ * SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
++ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
++ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
++ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
++ * OF THE POSSIBILITY OF SUCH DAMAGE.
++ * ====================================================================
++ *
++ * This product includes cryptographic software written by Eric Young
++ * (eay@cryptsoft.com).  This product includes software written by Tim
++ * Hudson (tjh@cryptsoft.com).
++ *
++ */
++
++#include <stdio.h>
++#include <openssl/bn.h>
++
++/* FIPS186-4 routines for prime derivation */
++
++/* FIPS186-4 prime derivation. This is used to generate the primes pi
++ * (p1, p2, q1, q2) from a parameter Xpi by checking successive odd
++ * integers.
++ */
++
++static int bn_fips_derive_pi(
++	BIGNUM *pi, const BIGNUM *Xpi, 
++	int pi_tests, BN_CTX *ctx,
++	BN_GENCB *cb)
++{
++	int i = 0;
++	if (!BN_copy(pi, Xpi))
++		return 0;
++	if (!BN_is_odd(pi) && !BN_add_word(pi, 1))
++		return 0;
++	for(;;)
++	{
++		i++;
++		BN_GENCB_call(cb, 0, i);
++		/* NB of MR tests is specificed in FIPS186-4 */
++		if (BN_is_prime_fasttest_ex(pi, pi_tests, ctx, 1, cb))
++			break;
++		if (!BN_add_word(pi, 2))
++			return 0;
++	}
++	BN_GENCB_call(cb, 2, i);
++	return 1;
++}
++
++/* This is the main FIPS186-4 prime derivation function. From parameters
++ * Xp1, Xp2 and Xp derive the prime p. If the parameters p1 or p2 are
++ * not NULL they will be returned too: this is needed for testing.
++ */
++
++int BN_fips_derive_prime_ex(
++    BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
++	const BIGNUM *Xp, const BIGNUM *Xp1, const BIGNUM *Xp2,
++	const BIGNUM *e, BN_CTX *ctx, BN_GENCB *cb)
++{
++	int ret = 0;
++	int bits = BN_num_bits(Xp);
++	int pi_tests, pq_tests;
++	BIGNUM *t, *p1p2, *pm1;
++
++    /* FIPS186-4 defines only 3 key sizes (1024, 2048 and 3072)
++     * We handle sizes outside of this list to be able to deal
++     * with key creation in non-fips mode.
++     * Note that in fips mode, the key size is checked before
++     * calling this function
++     */
++    if (bits <= 512)        /* 1024-bit key sizes */
++    {
++        pi_tests = 38;      /* pi M-R tests: 38 */
++        pq_tests = 7;       /* p & q M-R tests: 7 */
++    }
++    else if (bits <= 1024)  /* 2048-bit key sizes */
++    {
++        pi_tests = 32;      /* pi M-R tests: 32 */
++        pq_tests = 4;       /* p & q M-R tests: 4 */
++    }
++    else                    /* 3072-bit key sizes and up */
++    {
++        pi_tests = 27;      /* pi M-R tests: 27 */
++        pq_tests = 3;       /* p & q M-R tests: 3 */
++    }
++    
++	/* Only odd e supported */
++	if (!BN_is_odd(e))
++		return 0;
++
++	BN_CTX_start(ctx);
++	if (!p1)
++		p1 = BN_CTX_get(ctx);
++
++	if (!p2)
++		p2 = BN_CTX_get(ctx);
++
++	t = BN_CTX_get(ctx);
++
++	p1p2 = BN_CTX_get(ctx);
++
++	pm1 = BN_CTX_get(ctx);
++
++	if (!bn_fips_derive_pi(p1, Xp1, pi_tests, ctx, cb))
++		goto err;
++
++	if (!bn_fips_derive_pi(p2, Xp2, pi_tests, ctx, cb))
++		goto err;
++
++    /*
++        R1 = (1/p2 mod 2p1) * p2 - (1/2p1 mod p2) * 2p1
++        Yp0 = Xp + (R1- Xp mod 2p1*p2)
++
++        check sequence of p = Yp0, Yp0+p1p2, Yp0+2p1p2, Yp0+3p1p2,... 
++            - gcd(p-1, e) == 1
++            - isPrime: passes MR tests(pq_test)
++    */
++
++	if (!BN_mul(p1p2, p1, p2, ctx))
++		goto err;
++
++	/* First set p to value of Rp */
++
++    if (!BN_lshift(t, p1, 1))       /* t = 2*p1 */
++        goto err;
++        
++	if (!BN_mod_inverse(p, p2, t, ctx))
++		goto err;
++
++	if (!BN_mul(p, p, p2, ctx))     /* p = (1/p2 mod 2p1) * p2 */
++		goto err;
++
++	if (!BN_mod_inverse(pm1, t, p2, ctx))
++		goto err;
++
++	if (!BN_mul(t, pm1, t, ctx))    /* t = (1/2p1 mod p2) * 2p1 */
++		goto err;
++
++	if (!BN_sub(p, p, t))           /* p -= (1/2p1 mod p2) * 2p1 */
++		goto err;
++
++    if (!BN_lshift(t, p1p2, 1))     /* t = 2*p1p2 */
++        goto err;
++        
++    /* if p < 0, p += 2p1p2 */
++	if (p->neg && !BN_add(p, p, t))
++		goto err;
++
++	/* p now equals Rp */
++
++	if (!BN_mod_sub(p, p, Xp, t, ctx))  /* p - Xp mod 2p1p2 */
++		goto err;
++
++	if (!BN_add(p, p, Xp))          /* Yp0 = Xp + (R1- Xp mod 2p1*p2) */
++		goto err;
++
++	/* p now equals Yp0 */
++
++	for (;;)
++	{
++		int i = 1;
++		BN_GENCB_call(cb, 0, i++);
++		if (!BN_copy(pm1, p))
++			goto err;
++		if (!BN_sub_word(pm1, 1))
++			goto err;
++		if (!BN_gcd(t, pm1, e, ctx))
++			goto err;
++		if (BN_is_one(t)
++		    /* FIPS186-4 specifies number of MR-only tests */
++			&& BN_is_prime_fasttest_ex(p, pq_tests, ctx, 1, cb))
++			break;
++		if (!BN_add(p, p, p1p2))
++			goto err;
++	}
++
++	BN_GENCB_call(cb, 3, 0);
++
++	ret = 1;
++
++	err:
++
++	BN_CTX_end(ctx);
++
++	return ret;
++}
++
++/* 
++ * Generate Xp and Xq as defined by FIPS186-4 section B.3.6
++ *  1. Set Xp and Xq a random number in the range [sqrt(2)*(2^nbits/2-1), 
++ *       (2^nbits/2) - 1]; 
++ *  2. Check that: abs(Xp - Xq) > 2^(nbits/2-100)
++ */
++
++int BN_fips_generate_Xpq(
++    BIGNUM *Xp, BIGNUM *Xq, 
++    int nbits, 
++    BN_CTX *ctx)
++{
++	BIGNUM *t;
++	int i;
++	/* Number of bits for each prime is of the form
++	 * 512+128s for s = 0, 1, ...
++	 */
++	if ((nbits < 1024) || (nbits & 0xff))
++		return 0;
++	nbits >>= 1;
++	/* The random value Xp must be between sqrt(2) * 2^(nbits-1) and
++	 * 2^nbits - 1. By setting the top two bits we ensure that the lower
++	 * bound is exceeded.
++     * Upper bound is the max value of an n-bit entry. This condition is 
++     * satisfied as long as it contains some 0's (less than 0xFF...FF)
++	 */
++	if (!BN_rand(Xp, nbits, 1, 0))
++		return 0;
++
++	BN_CTX_start(ctx);
++	t = BN_CTX_get(ctx);
++
++	for (i = 0; i < 1000; i++)
++	{
++		if (!BN_rand(Xq, nbits, 1, 0))
++			return 0;
++		/* Check that |Xp - Xq| > 2^(nbits - 100) */
++		BN_sub(t, Xp, Xq);
++		if (BN_num_bits(t) > (nbits - 100))
++			break;
++	}
++
++	BN_CTX_end(ctx);
++
++	if (i < 1000)
++		return 1;
++
++	return 0;
++
++	}
++
++/* Generate primes using FIPS186-4 algorithm. Of the values p, p1, p2, Xp1
++ * and Xp2 only 'p' needs to be non-NULL. If any of the others are not NULL
++ * the relevant parameter will be stored in it.
++ *
++ * Due to the fact that |Xp - Xq| > 2^(nbits - 100) must be satisfied Xp and Xq
++ * are generated using the previous function and supplied as input.
++ */
++
++int BN_fips_generate_prime_ex(
++    BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
++    BIGNUM *Xp1, BIGNUM *Xp2, const BIGNUM *Xp,
++    const BIGNUM *e, BN_CTX *ctx,
++    BN_GENCB *cb)
++{
++	int ret = 0;    /* assume error */
++    int bits = BN_num_bits(Xp);
++    
++    /* Auxiliary prime sizes as defined by FIPS186-4 table B.2 */
++    int aux_prime_bits = 
++        (bits <= 512) ? 101 :           /* 100+ for 1024-bit keys */
++        (bits <= 1024) ? 141 : 171;     /* 140+ for 2048, 170+ for 3072 */
++
++	BN_CTX_start(ctx);
++	if (!Xp1)
++		Xp1 = BN_CTX_get(ctx);
++	if (!Xp2)
++		Xp2 = BN_CTX_get(ctx);
++
++	if (!BN_rand(Xp1, aux_prime_bits, 0, 1))
++		goto error;
++	if (!BN_rand(Xp2, aux_prime_bits, 0, 1))
++		goto error;
++	if (!BN_fips_derive_prime_ex(p, p1, p2, Xp, Xp1, Xp2, 
++	        e, ctx, cb))
++		goto error;
++
++	ret = 1;
++
++	error:
++	BN_CTX_end(ctx);
++
++	return ret;
++
++}
++
+--- crypto/bn/bn.h	2015-11-16 13:45:17.000000000 -0800
++++ crypto/bn/bn.h	2017-06-13 09:31:10.000000000 -0700
+@@ -558,16 +558,17 @@
+ int	BN_is_prime_fasttest_ex(const BIGNUM *p,int nchecks, BN_CTX *ctx,
+ 		int do_trial_division, BN_GENCB *cb);
+ 
+-int BN_X931_generate_Xpq(BIGNUM *Xp, BIGNUM *Xq, int nbits, BN_CTX *ctx);
++int BN_fips_generate_Xpq(BIGNUM *Xp, BIGNUM *Xq, int nbits, BN_CTX *ctx);
+ 
+-int BN_X931_derive_prime_ex(BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
+-			const BIGNUM *Xp, const BIGNUM *Xp1, const BIGNUM *Xp2,
+-			const BIGNUM *e, BN_CTX *ctx, BN_GENCB *cb);
+-int BN_X931_generate_prime_ex(BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
+-			BIGNUM *Xp1, BIGNUM *Xp2,
+-			const BIGNUM *Xp,
+-			const BIGNUM *e, BN_CTX *ctx,
+-			BN_GENCB *cb);
++int BN_fips_derive_prime_ex(
++    BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
++	const BIGNUM *Xp, const BIGNUM *Xp1, const BIGNUM *Xp2,
++	const BIGNUM *e, BN_CTX *ctx, BN_GENCB *cb);
++	
++int BN_fips_generate_prime_ex(
++    BIGNUM *p, BIGNUM *p1, BIGNUM *p2,
++    BIGNUM *Xp1, BIGNUM *Xp2, const BIGNUM *Xp,
++    const BIGNUM *e, BN_CTX *ctx, BN_GENCB *cb);
+ 
+ BN_MONT_CTX *BN_MONT_CTX_new(void );
+ void BN_MONT_CTX_init(BN_MONT_CTX *ctx);
+--- crypto/bn/Makefile	2015-11-16 13:45:16.000000000 -0800
++++ crypto/bn/Makefile	2017-06-13 09:31:10.000000000 -0700
+@@ -26,13 +26,13 @@
+ 	bn_print.c bn_rand.c bn_shift.c bn_word.c bn_blind.c \
+ 	bn_kron.c bn_sqrt.c bn_gcd.c bn_prime.c bn_err.c bn_sqr.c bn_asm.c \
+ 	bn_recp.c bn_mont.c bn_mpi.c bn_exp2.c bn_gf2m.c bn_nist.c \
+-	bn_depr.c bn_const.c bn_x931p.c
++	bn_depr.c bn_const.c bn_fips_prime.c
+ 
+ LIBOBJ=	bn_add.o bn_div.o bn_exp.o bn_lib.o bn_ctx.o bn_mul.o bn_mod.o \
+ 	bn_print.o bn_rand.o bn_shift.o bn_word.o bn_blind.o \
+ 	bn_kron.o bn_sqrt.o bn_gcd.o bn_prime.o bn_err.o bn_sqr.o $(BN_ASM) \
+ 	bn_recp.o bn_mont.o bn_mpi.o bn_exp2.o bn_gf2m.o bn_nist.o \
+-	bn_depr.o bn_const.o bn_x931p.o
++	bn_depr.o bn_const.o bn_fips_prime.o
+ 
+ SRC= $(LIBSRC)
+ 
+@@ -369,8 +369,8 @@
+ bn_word.o: ../../include/openssl/opensslv.h ../../include/openssl/ossl_typ.h
+ bn_word.o: ../../include/openssl/safestack.h ../../include/openssl/stack.h
+ bn_word.o: ../../include/openssl/symhacks.h ../cryptlib.h bn_lcl.h bn_word.c
+-bn_x931p.o: ../../include/openssl/bn.h ../../include/openssl/crypto.h
+-bn_x931p.o: ../../include/openssl/e_os2.h ../../include/openssl/opensslconf.h
+-bn_x931p.o: ../../include/openssl/opensslv.h ../../include/openssl/ossl_typ.h
+-bn_x931p.o: ../../include/openssl/safestack.h ../../include/openssl/stack.h
+-bn_x931p.o: ../../include/openssl/symhacks.h bn_x931p.c
++bn_fips_prime.o: ../../include/openssl/bn.h ../../include/openssl/crypto.h
++bn_fips_prime.o: ../../include/openssl/e_os2.h ../../include/openssl/opensslconf.h
++bn_fips_prime.o: ../../include/openssl/opensslv.h ../../include/openssl/ossl_typ.h
++bn_fips_prime.o: ../../include/openssl/safestack.h ../../include/openssl/stack.h
++bn_fips_prime.o: ../../include/openssl/symhacks.h bn_fips_prime.c
+--- crypto/rsa/rsa_fips_gen.c	1969-12-31 16:00:00.000000000 -0800
++++ crypto/rsa/rsa_fips_gen.c	2017-06-13 09:31:10.000000000 -0700
+@@ -0,0 +1,322 @@
++/* crypto/rsa/rsa_fips_gen.c
++ * This file is originated from crypto/rsa/rsa_x931g.c and modified
++ * to support RSA key generation compliant with FIPS186-4 B.3.6
++ * The algorithm creates random probable primes with condition using
++ * an error probability of 2^(-100).
++ * Mofication carried out by: mehdi sotoodeh (mehdisotoodeh@gmail.com)
++ * Copyright 2014 Vormetric Inc.
++ */
++ 
++/* crypto/rsa/rsa_gen.c */
++/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
++ * All rights reserved.
++ *
++ * This package is an SSL implementation written
++ * by Eric Young (eay@cryptsoft.com).
++ * The implementation was written so as to conform with Netscapes SSL.
++ * 
++ * This library is free for commercial and non-commercial use as long as
++ * the following conditions are aheared to.  The following conditions
++ * apply to all code found in this distribution, be it the RC4, RSA,
++ * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
++ * included with this distribution is covered by the same copyright terms
++ * except that the holder is Tim Hudson (tjh@cryptsoft.com).
++ * 
++ * Copyright remains Eric Young's, and as such any Copyright notices in
++ * the code are not to be removed.
++ * If this package is used in a product, Eric Young should be given attribution
++ * as the author of the parts of the library used.
++ * This can be in the form of a textual message at program startup or
++ * in documentation (online or textual) provided with the package.
++ * 
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the copyright
++ *    notice, this list of conditions and the following disclaimer.
++ * 2. Redistributions in binary form must reproduce the above copyright
++ *    notice, this list of conditions and the following disclaimer in the
++ *    documentation and/or other materials provided with the distribution.
++ * 3. All advertising materials mentioning features or use of this software
++ *    must display the following acknowledgement:
++ *    "This product includes cryptographic software written by
++ *     Eric Young (eay@cryptsoft.com)"
++ *    The word 'cryptographic' can be left out if the rouines from the library
++ *    being used are not cryptographic related :-).
++ * 4. If you include any Windows specific code (or a derivative thereof) from 
++ *    the apps directory (application code) you must include an acknowledgement:
++ *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
++ * 
++ * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
++ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
++ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
++ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
++ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
++ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
++ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
++ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
++ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
++ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
++ * SUCH DAMAGE.
++ * 
++ * The licence and distribution terms for any publically available version or
++ * derivative of this code cannot be changed.  i.e. this code cannot simply be
++ * copied and put under another distribution licence
++ * [including the GNU Public Licence.]
++ */
++
++#define OPENSSL_FIPSAPI
++
++#include <stdio.h>
++#include <string.h>
++#include <time.h>
++#include <openssl/err.h>
++#include <openssl/bn.h>
++#include <openssl/rsa.h>
++
++#ifdef OPENSSL_FIPS
++#include <openssl/fips.h>
++
++extern int fips_check_rsa(RSA *rsa);
++#endif
++
++/* FIPS186-4 RSA key derivation and generation */
++
++int RSA_fips_derive_ex(
++    RSA *rsa, BIGNUM *p1, BIGNUM *p2, BIGNUM *q1, BIGNUM *q2,
++	const BIGNUM *Xp1, const BIGNUM *Xp2, const BIGNUM *Xp,
++	const BIGNUM *Xq1, const BIGNUM *Xq2, const BIGNUM *Xq,
++	const BIGNUM *e, BN_GENCB *cb)
++{
++	BIGNUM *r0=NULL,*r1=NULL,*r2=NULL,*r3=NULL;
++	BN_CTX *ctx=NULL,*ctx2=NULL;
++
++	if (!rsa) 
++		goto err;
++
++	ctx = BN_CTX_new();
++	BN_CTX_start(ctx);
++	if (!ctx) 
++		goto err;
++
++	r0 = BN_CTX_get(ctx);
++	r1 = BN_CTX_get(ctx);
++	r2 = BN_CTX_get(ctx);
++	r3 = BN_CTX_get(ctx);
++
++	if (r3 == NULL)
++		goto err;
++	if (!rsa->e)
++	{
++		rsa->e = BN_dup(e);
++		if (!rsa->e)
++			goto err;
++	}
++	else
++		e = rsa->e;
++
++	/* If not all parameters present only calculate what we can.
++	 * This allows test programs to output selective parameters.
++	 */
++
++	if (Xp && !rsa->p)
++	{
++		rsa->p = BN_new();
++		if (!rsa->p)
++			goto err;
++
++		if (!BN_fips_derive_prime_ex(rsa->p, p1, p2,
++					Xp, Xp1, Xp2, e, ctx, cb))
++			goto err;
++	}
++
++	if (Xq && !rsa->q)
++	{
++		rsa->q = BN_new();
++		if (!rsa->q)
++			goto err;
++		if (!BN_fips_derive_prime_ex(rsa->q, q1, q2,
++					Xq, Xq1, Xq2, e, ctx, cb))
++			goto err;
++	}
++
++	if (!rsa->p || !rsa->q)
++	{
++		BN_CTX_end(ctx);
++		BN_CTX_free(ctx);
++		return 2;
++	}
++
++	/* Since both primes are set we can now calculate all remaining 
++	 * components.
++	 */
++
++	/* calculate n */
++	rsa->n=BN_new();
++	if (rsa->n == NULL)
++		goto err;
++	if (!BN_mul(rsa->n,rsa->p,rsa->q,ctx))
++		goto err;
++
++	/* calculate d */
++	if (!BN_sub(r1,rsa->p,BN_value_one()))
++		goto err;	/* p-1 */
++	if (!BN_sub(r2,rsa->q,BN_value_one()))
++		goto err;	/* q-1 */
++	if (!BN_mul(r0,r1,r2,ctx))
++		goto err;	/* (p-1)(q-1) */
++
++	if (!BN_gcd(r3, r1, r2, ctx))
++		goto err;
++
++	if (!BN_div(r0, NULL, r0, r3, ctx))
++		goto err;	/* LCM(p-1, q-1) */
++
++	ctx2 = BN_CTX_new();
++	if (!ctx2)
++		goto err;
++
++	rsa->d=BN_mod_inverse(NULL,rsa->e,r0,ctx2);	/* d */
++	if (rsa->d == NULL)
++		goto err;
++
++	/* calculate d mod (p-1) */
++	rsa->dmp1=BN_new();
++	if (rsa->dmp1 == NULL)
++		goto err;
++	if (!BN_mod(rsa->dmp1,rsa->d,r1,ctx))
++		goto err;
++
++	/* calculate d mod (q-1) */
++	rsa->dmq1=BN_new();
++	if (rsa->dmq1 == NULL)
++		goto err;
++	if (!BN_mod(rsa->dmq1,rsa->d,r2,ctx))
++		goto err;
++
++	/* calculate inverse of q mod p */
++	rsa->iqmp=BN_mod_inverse(NULL,rsa->q,rsa->p,ctx2);
++
++	err:
++	if (ctx)
++	{
++		BN_CTX_end(ctx);
++		BN_CTX_free(ctx);
++	}
++	if (ctx2)
++		BN_CTX_free(ctx2);
++	/* If this is set all calls successful */
++	if (rsa->iqmp != NULL)
++		return 1;
++
++	return 0;
++
++}
++
++int RSA_fips_generate_key_ex(RSA *rsa, int bits, const BIGNUM *e, BN_GENCB *cb)
++{
++	int ok = 0;
++	BIGNUM *Xp = NULL, *Xq = NULL;
++	BN_CTX *ctx = NULL;
++
++#ifdef OPENSSL_FIPS
++    if (FIPS_module_mode() && !(rsa->flags & RSA_FLAG_NON_FIPS_ALLOW))
++    {
++        int e_bits;
++        
++        /* Only 3 key sizes are expected in FIPS mode: 1024, 2048 and 3072*/
++        switch (bits)
++        {
++            case 1024:
++            case 2048:
++            case 3072:
++                break;
++            default:
++                /* Unsupported key size */
++                FIPSerr(FIPS_F_RSA_FIPS_GENERATE_KEY_EX,FIPS_R_INVALID_KEY_LENGTH);
++                return 0;
++        }
++        
++        /* FIPS186-4: public exponent e should meet following constraints:
++            a. Should be odd AND
++            b. Should be greater than 2^16 and less than 2^256
++        */
++        e_bits = BN_num_bits(e);
++        if (!BN_is_odd(e) || e_bits <= 16 || e_bits >= 256)
++        {
++            FIPSerr(FIPS_F_RSA_FIPS_GENERATE_KEY_EX,FIPS_R_INVALID_PARAMETERS);
++            return 0;
++        }
++    }
++    else
++    {
++        if (bits & 0xff)
++        {
++            FIPSerr(FIPS_F_RSA_FIPS_GENERATE_KEY_EX,FIPS_R_INVALID_KEY_LENGTH);
++            return 0;
++        }
++    }
++
++	if(FIPS_selftest_failed())
++    {
++	    FIPSerr(FIPS_F_RSA_FIPS_GENERATE_KEY_EX,FIPS_R_FIPS_SELFTEST_FAILED);
++	    return 0;
++    }
++        
++	if (!fips_check_rsa_prng(rsa, bits))
++	    return 0;
++#endif
++
++	ctx = BN_CTX_new();
++	if (!ctx)
++		goto error;
++
++	BN_CTX_start(ctx);
++	Xp = BN_CTX_get(ctx);
++	Xq = BN_CTX_get(ctx);
++	if (!BN_fips_generate_Xpq(Xp, Xq, bits, ctx))
++		goto error;
++
++	rsa->p = BN_new();
++	rsa->q = BN_new();
++	if (!rsa->p || !rsa->q)
++		goto error;
++
++	/* Generate two primes from Xp, Xq */
++
++	if (!BN_fips_generate_prime_ex(rsa->p, NULL, NULL, NULL, NULL, Xp,
++			e, ctx, cb))
++		goto error;
++
++	if (!BN_fips_generate_prime_ex(rsa->q, NULL, NULL, NULL, NULL, Xq,
++            e, ctx, cb))
++		goto error;
++
++	/* Since rsa->p and rsa->q are valid this call will just derive
++	 * remaining RSA components.
++	 */
++
++	if (!RSA_fips_derive_ex(rsa, NULL, NULL, NULL, NULL,
++				NULL, NULL, NULL, NULL, NULL, NULL, e, cb))
++		goto error;
++
++#ifdef OPENSSL_FIPS
++	if(!fips_check_rsa(rsa))
++	    goto error;
++#endif
++
++	ok = 1;
++
++	error:
++	if (ctx)
++	{
++		BN_CTX_end(ctx);
++		BN_CTX_free(ctx);
++	}
++
++	if (ok)
++		return 1;
++
++	return 0;
++}
++
+--- crypto/rsa/rsa_x931g.c	2015-11-16 13:45:20.000000000 -0800
++++ crypto/rsa/rsa_x931g.c	1969-12-31 16:00:00.000000000 -0800
+@@ -1,288 +0,0 @@
+-/* crypto/rsa/rsa_gen.c */
+-/* Copyright (C) 1995-1998 Eric Young (eay@cryptsoft.com)
+- * All rights reserved.
+- *
+- * This package is an SSL implementation written
+- * by Eric Young (eay@cryptsoft.com).
+- * The implementation was written so as to conform with Netscapes SSL.
+- * 
+- * This library is free for commercial and non-commercial use as long as
+- * the following conditions are aheared to.  The following conditions
+- * apply to all code found in this distribution, be it the RC4, RSA,
+- * lhash, DES, etc., code; not just the SSL code.  The SSL documentation
+- * included with this distribution is covered by the same copyright terms
+- * except that the holder is Tim Hudson (tjh@cryptsoft.com).
+- * 
+- * Copyright remains Eric Young's, and as such any Copyright notices in
+- * the code are not to be removed.
+- * If this package is used in a product, Eric Young should be given attribution
+- * as the author of the parts of the library used.
+- * This can be in the form of a textual message at program startup or
+- * in documentation (online or textual) provided with the package.
+- * 
+- * Redistribution and use in source and binary forms, with or without
+- * modification, are permitted provided that the following conditions
+- * are met:
+- * 1. Redistributions of source code must retain the copyright
+- *    notice, this list of conditions and the following disclaimer.
+- * 2. Redistributions in binary form must reproduce the above copyright
+- *    notice, this list of conditions and the following disclaimer in the
+- *    documentation and/or other materials provided with the distribution.
+- * 3. All advertising materials mentioning features or use of this software
+- *    must display the following acknowledgement:
+- *    "This product includes cryptographic software written by
+- *     Eric Young (eay@cryptsoft.com)"
+- *    The word 'cryptographic' can be left out if the rouines from the library
+- *    being used are not cryptographic related :-).
+- * 4. If you include any Windows specific code (or a derivative thereof) from 
+- *    the apps directory (application code) you must include an acknowledgement:
+- *    "This product includes software written by Tim Hudson (tjh@cryptsoft.com)"
+- * 
+- * THIS SOFTWARE IS PROVIDED BY ERIC YOUNG ``AS IS'' AND
+- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+- * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+- * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+- * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+- * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+- * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+- * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+- * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+- * SUCH DAMAGE.
+- * 
+- * The licence and distribution terms for any publically available version or
+- * derivative of this code cannot be changed.  i.e. this code cannot simply be
+- * copied and put under another distribution licence
+- * [including the GNU Public Licence.]
+- */
+-
+-#define OPENSSL_FIPSAPI
+-
+-#include <stdio.h>
+-#include <string.h>
+-#include <time.h>
+-#include <openssl/err.h>
+-#include <openssl/bn.h>
+-#include <openssl/rsa.h>
+-
+-#ifdef OPENSSL_FIPS
+-#include <openssl/fips.h>
+-
+-extern int fips_check_rsa(RSA *rsa);
+-#endif
+-
+-/* X9.31 RSA key derivation and generation */
+-
+-int RSA_X931_derive_ex(RSA *rsa, BIGNUM *p1, BIGNUM *p2, BIGNUM *q1, BIGNUM *q2,
+-			const BIGNUM *Xp1, const BIGNUM *Xp2, const BIGNUM *Xp,
+-			const BIGNUM *Xq1, const BIGNUM *Xq2, const BIGNUM *Xq,
+-			const BIGNUM *e, BN_GENCB *cb)
+-	{
+-	BIGNUM *r0=NULL,*r1=NULL,*r2=NULL,*r3=NULL;
+-	BN_CTX *ctx=NULL,*ctx2=NULL;
+-
+-	if (!rsa) 
+-		goto err;
+-
+-	ctx = BN_CTX_new();
+-	BN_CTX_start(ctx);
+-	if (!ctx) 
+-		goto err;
+-
+-	r0 = BN_CTX_get(ctx);
+-	r1 = BN_CTX_get(ctx);
+-	r2 = BN_CTX_get(ctx);
+-	r3 = BN_CTX_get(ctx);
+-
+-	if (r3 == NULL)
+-		goto err;
+-	if (!rsa->e)
+-		{
+-		rsa->e = BN_dup(e);
+-		if (!rsa->e)
+-			goto err;
+-		}
+-	else
+-		e = rsa->e;
+-
+-	/* If not all parameters present only calculate what we can.
+-	 * This allows test programs to output selective parameters.
+-	 */
+-
+-	if (Xp && !rsa->p)
+-		{
+-		rsa->p = BN_new();
+-		if (!rsa->p)
+-			goto err;
+-
+-		if (!BN_X931_derive_prime_ex(rsa->p, p1, p2,
+-					Xp, Xp1, Xp2, e, ctx, cb))
+-			goto err;
+-		}
+-
+-	if (Xq && !rsa->q)
+-		{
+-		rsa->q = BN_new();
+-		if (!rsa->q)
+-			goto err;
+-		if (!BN_X931_derive_prime_ex(rsa->q, q1, q2,
+-					Xq, Xq1, Xq2, e, ctx, cb))
+-			goto err;
+-		}
+-
+-	if (!rsa->p || !rsa->q)
+-		{
+-		BN_CTX_end(ctx);
+-		BN_CTX_free(ctx);
+-		return 2;
+-		}
+-
+-	/* Since both primes are set we can now calculate all remaining 
+-	 * components.
+-	 */
+-
+-	/* calculate n */
+-	rsa->n=BN_new();
+-	if (rsa->n == NULL)
+-		goto err;
+-	if (!BN_mul(rsa->n,rsa->p,rsa->q,ctx))
+-		goto err;
+-
+-	/* calculate d */
+-	if (!BN_sub(r1,rsa->p,BN_value_one()))
+-		goto err;	/* p-1 */
+-	if (!BN_sub(r2,rsa->q,BN_value_one()))
+-		goto err;	/* q-1 */
+-	if (!BN_mul(r0,r1,r2,ctx))
+-		goto err;	/* (p-1)(q-1) */
+-
+-	if (!BN_gcd(r3, r1, r2, ctx))
+-		goto err;
+-
+-	if (!BN_div(r0, NULL, r0, r3, ctx))
+-		goto err;	/* LCM((p-1)(q-1)) */
+-
+-	ctx2 = BN_CTX_new();
+-	if (!ctx2)
+-		goto err;
+-
+-	rsa->d=BN_mod_inverse(NULL,rsa->e,r0,ctx2);	/* d */
+-	if (rsa->d == NULL)
+-		goto err;
+-
+-	/* calculate d mod (p-1) */
+-	rsa->dmp1=BN_new();
+-	if (rsa->dmp1 == NULL)
+-		goto err;
+-	if (!BN_mod(rsa->dmp1,rsa->d,r1,ctx))
+-		goto err;
+-
+-	/* calculate d mod (q-1) */
+-	rsa->dmq1=BN_new();
+-	if (rsa->dmq1 == NULL)
+-		goto err;
+-	if (!BN_mod(rsa->dmq1,rsa->d,r2,ctx))
+-		goto err;
+-
+-	/* calculate inverse of q mod p */
+-	rsa->iqmp=BN_mod_inverse(NULL,rsa->q,rsa->p,ctx2);
+-
+-	err:
+-	if (ctx)
+-		{
+-		BN_CTX_end(ctx);
+-		BN_CTX_free(ctx);
+-		}
+-	if (ctx2)
+-		BN_CTX_free(ctx2);
+-	/* If this is set all calls successful */
+-	if (rsa->iqmp != NULL)
+-		return 1;
+-
+-	return 0;
+-
+-	}
+-
+-int RSA_X931_generate_key_ex(RSA *rsa, int bits, const BIGNUM *e, BN_GENCB *cb)
+-	{
+-	int ok = 0;
+-	BIGNUM *Xp = NULL, *Xq = NULL;
+-	BN_CTX *ctx = NULL;
+-
+-#ifdef OPENSSL_FIPS
+-	if (FIPS_module_mode() && !(rsa->flags & RSA_FLAG_NON_FIPS_ALLOW) && 
+-		(bits < OPENSSL_RSA_FIPS_MIN_MODULUS_BITS))
+-	    {
+-	    FIPSerr(FIPS_F_RSA_X931_GENERATE_KEY_EX,FIPS_R_KEY_TOO_SHORT);
+-	    return 0;
+-	    }
+-
+-	if (bits & 0xff)
+-	    {
+-	    FIPSerr(FIPS_F_RSA_X931_GENERATE_KEY_EX,FIPS_R_INVALID_KEY_LENGTH);
+-	    return 0;
+-	    }
+-
+-	if(FIPS_selftest_failed())
+-	    {
+-	    FIPSerr(FIPS_F_RSA_X931_GENERATE_KEY_EX,FIPS_R_FIPS_SELFTEST_FAILED);
+-	    return 0;
+-	    }
+-	if (!fips_check_rsa_prng(rsa, bits))
+-	    return 0;
+-#endif
+-
+-	ctx = BN_CTX_new();
+-	if (!ctx)
+-		goto error;
+-
+-	BN_CTX_start(ctx);
+-	Xp = BN_CTX_get(ctx);
+-	Xq = BN_CTX_get(ctx);
+-	if (!BN_X931_generate_Xpq(Xp, Xq, bits, ctx))
+-		goto error;
+-
+-	rsa->p = BN_new();
+-	rsa->q = BN_new();
+-	if (!rsa->p || !rsa->q)
+-		goto error;
+-
+-	/* Generate two primes from Xp, Xq */
+-
+-	if (!BN_X931_generate_prime_ex(rsa->p, NULL, NULL, NULL, NULL, Xp,
+-					e, ctx, cb))
+-		goto error;
+-
+-	if (!BN_X931_generate_prime_ex(rsa->q, NULL, NULL, NULL, NULL, Xq,
+-					e, ctx, cb))
+-		goto error;
+-
+-	/* Since rsa->p and rsa->q are valid this call will just derive
+-	 * remaining RSA components.
+-	 */
+-
+-	if (!RSA_X931_derive_ex(rsa, NULL, NULL, NULL, NULL,
+-				NULL, NULL, NULL, NULL, NULL, NULL, e, cb))
+-		goto error;
+-
+-#ifdef OPENSSL_FIPS
+-	if(!fips_check_rsa(rsa))
+-	    goto error;
+-#endif
+-
+-	ok = 1;
+-
+-	error:
+-	if (ctx)
+-		{
+-		BN_CTX_end(ctx);
+-		BN_CTX_free(ctx);
+-		}
+-
+-	if (ok)
+-		return 1;
+-
+-	return 0;
+-
+-	}
+-
+--- crypto/rsa/rsa.h	2015-11-16 13:45:20.000000000 -0800
++++ crypto/rsa/rsa.h	2017-06-13 09:31:10.000000000 -0700
+@@ -293,11 +293,12 @@
+ /* New version */
+ int	RSA_generate_key_ex(RSA *rsa, int bits, BIGNUM *e, BN_GENCB *cb);
+ 
+-int RSA_X931_derive_ex(RSA *rsa, BIGNUM *p1, BIGNUM *p2, BIGNUM *q1, BIGNUM *q2,
+-			const BIGNUM *Xp1, const BIGNUM *Xp2, const BIGNUM *Xp,
+-			const BIGNUM *Xq1, const BIGNUM *Xq2, const BIGNUM *Xq,
+-			const BIGNUM *e, BN_GENCB *cb);
+-int RSA_X931_generate_key_ex(RSA *rsa, int bits, const BIGNUM *e, BN_GENCB *cb);
++int RSA_fips_derive_ex(
++    RSA *rsa, BIGNUM *p1, BIGNUM *p2, BIGNUM *q1, BIGNUM *q2,
++	const BIGNUM *Xp1, const BIGNUM *Xp2, const BIGNUM *Xp,
++	const BIGNUM *Xq1, const BIGNUM *Xq2, const BIGNUM *Xq,
++	const BIGNUM *e, BN_GENCB *cb);
++int RSA_fips_generate_key_ex(RSA *rsa, int bits, const BIGNUM *e, BN_GENCB *cb);
+ 
+ int	RSA_check_key(const RSA *);
+ 	/* next 4 return -1 on error */
+--- crypto/rsa/rsa_eay.c	2015-11-16 13:45:20.000000000 -0800
++++ crypto/rsa/rsa_eay.c	2017-06-13 09:31:10.000000000 -0700
+@@ -147,7 +147,7 @@
+ 	NULL,
+ 	0, /* rsa_sign */
+ 	0, /* rsa_verify */
+-	NULL /* rsa_keygen */
++	RSA_fips_generate_key_ex /* rsa_keygen */
+ 	};
+ 
+ const RSA_METHOD *RSA_PKCS1_SSLeay(void)
+--- crypto/rsa/Makefile	2015-11-16 13:45:20.000000000 -0800
++++ crypto/rsa/Makefile	2017-06-13 09:31:10.000000000 -0700
+@@ -20,11 +20,11 @@
+ LIBSRC= rsa_eay.c rsa_gen.c rsa_lib.c rsa_sign.c rsa_saos.c rsa_err.c \
+ 	rsa_pk1.c rsa_ssl.c rsa_none.c rsa_oaep.c rsa_chk.c rsa_null.c \
+ 	rsa_pss.c rsa_x931.c rsa_asn1.c rsa_depr.c rsa_ameth.c rsa_prn.c \
+-	rsa_pmeth.c rsa_crpt.c rsa_x931g.c
++	rsa_pmeth.c rsa_crpt.c rsa_fips_gen.c
+ LIBOBJ= rsa_eay.o rsa_gen.o rsa_lib.o rsa_sign.o rsa_saos.o rsa_err.o \
+ 	rsa_pk1.o rsa_ssl.o rsa_none.o rsa_oaep.o rsa_chk.o rsa_null.o \
+ 	rsa_pss.o rsa_x931.o rsa_asn1.o rsa_depr.o rsa_ameth.o rsa_prn.o \
+-	rsa_pmeth.o rsa_crpt.o rsa_x931g.o
++	rsa_pmeth.o rsa_crpt.o rsa_fips_gen.o
+ 
+ SRC= $(LIBSRC)
+ 
+@@ -299,11 +299,11 @@
+ rsa_x931.o: ../../include/openssl/rand.h ../../include/openssl/rsa.h
+ rsa_x931.o: ../../include/openssl/safestack.h ../../include/openssl/stack.h
+ rsa_x931.o: ../../include/openssl/symhacks.h ../cryptlib.h rsa_x931.c
+-rsa_x931g.o: ../../include/openssl/asn1.h ../../include/openssl/bio.h
+-rsa_x931g.o: ../../include/openssl/bn.h ../../include/openssl/crypto.h
+-rsa_x931g.o: ../../include/openssl/e_os2.h ../../include/openssl/err.h
+-rsa_x931g.o: ../../include/openssl/lhash.h ../../include/openssl/opensslconf.h
+-rsa_x931g.o: ../../include/openssl/opensslv.h ../../include/openssl/ossl_typ.h
+-rsa_x931g.o: ../../include/openssl/rsa.h ../../include/openssl/safestack.h
+-rsa_x931g.o: ../../include/openssl/stack.h ../../include/openssl/symhacks.h
+-rsa_x931g.o: rsa_x931g.c
++rsa_fips_gen.o: ../../include/openssl/asn1.h ../../include/openssl/bio.h
++rsa_fips_gen.o: ../../include/openssl/bn.h ../../include/openssl/crypto.h
++rsa_fips_gen.o: ../../include/openssl/e_os2.h ../../include/openssl/err.h
++rsa_fips_gen.o: ../../include/openssl/lhash.h ../../include/openssl/opensslconf.h
++rsa_fips_gen.o: ../../include/openssl/opensslv.h ../../include/openssl/ossl_typ.h
++rsa_fips_gen.o: ../../include/openssl/rsa.h ../../include/openssl/safestack.h
++rsa_fips_gen.o: ../../include/openssl/stack.h ../../include/openssl/symhacks.h
++rsa_fips_gen.o: rsa_fips_gen.c
+--- fips/fips.h	2015-11-16 13:45:23.000000000 -0800
++++ fips/fips.h	2017-06-13 09:31:10.000000000 -0700
+@@ -418,6 +418,8 @@
+ #define FIPS_F_RSA_EAY_PUBLIC_DECRYPT			 141
+ #define FIPS_F_RSA_EAY_PUBLIC_ENCRYPT			 142
+ #define FIPS_F_RSA_X931_GENERATE_KEY_EX			 143
++#define FIPS_F_RSA_FIPS_GENERATE_KEY_EX			 FIPS_F_RSA_X931_GENERATE_KEY_EX
++#define FIPS_rsa_x931_generate_key_ex            FIPS_rsa_fips_generate_key_ex
+ 
+ /* Reason codes. */
+ #define FIPS_R_ADDITIONAL_INPUT_ERROR_UNDETECTED	 150
+--- fips/fipssyms.h	2015-11-16 13:45:23.000000000 -0800
++++ fips/fipssyms.h	2017-06-13 09:31:10.000000000 -0700
+@@ -106,9 +106,9 @@
+ #define BN_RECP_CTX_init fips_bn_recp_ctx_init
+ #define BN_RECP_CTX_new fips_bn_recp_ctx_new
+ #define BN_RECP_CTX_set fips_bn_recp_ctx_set
+-#define BN_X931_derive_prime_ex FIPS_bn_x931_derive_prime_ex
+-#define BN_X931_generate_Xpq FIPS_bn_x931_generate_xpq
+-#define BN_X931_generate_prime_ex FIPS_bn_x931_generate_prime_ex
++#define BN_fips_derive_prime_ex FIPS_BN_fips_derive_prime_ex
++#define BN_fips_generate_Xpq FIPS_BN_fips_generate_xpq
++#define BN_fips_generate_prime_ex FIPS_BN_fips_generate_prime_ex
+ #define BN_add fips_bn_add
+ #define BN_add_word fips_bn_add_word
+ #define BN_bin2bn FIPS_bn_bin2bn
+@@ -423,9 +423,9 @@
+ #define OpenSSLDie FIPS_openssldie
+ #define PKCS1_MGF1 fips_pkcs1_mgf1
+ #define RSA_PKCS1_SSLeay FIPS_rsa_pkcs1_ssleay
+-#define RSA_X931_derive_ex FIPS_rsa_x931_derive_ex
+-#define RSA_X931_generate_key_ex FIPS_rsa_x931_generate_key_ex
+-#define RSA_X931_hash_id fips_rsa_x931_hash_id
++#define RSA_fips_derive_ex FIPS_rsa_fips_derive_ex
++#define RSA_fips_generate_key_ex FIPS_rsa_fips_generate_key_ex
++#define RSA_X931_hash_id fips_rsa_X931_hash_id
+ #define RSA_blinding_off FIPS_rsa_blinding_off
+ #define RSA_blinding_on FIPS_rsa_blinding_on
+ #define RSA_flags FIPS_rsa_flags
+--- fips/rand/fips_drbgvs.c	2015-11-16 13:45:23.000000000 -0800
++++ fips/rand/fips_drbgvs.c	2017-06-13 09:31:10.000000000 -0700
+@@ -299,6 +299,13 @@
+ 				exit(1);
+ 			}
+ 
++		if (!strcmp(keyword, "[ReturnedBitsLen"))
++			{
++			int len = strlen(value);
++			value[len-1] = '\0';
++			randoutlen = (atoi(value)/8);
++			}
++
+ 		if (!strcmp(keyword, "EntropyInput"))
+ 			{
+ 			ent = hex2bin_m(value, &entlen);
+@@ -327,7 +334,7 @@
+ 			FIPS_drbg_set_callbacks(dctx, test_entropy, 0, 0,
+ 							test_nonce, 0);
+ 			FIPS_drbg_set_app_data(dctx, &t);
+-			randoutlen = (int)FIPS_drbg_get_blocklength(dctx);
++			//randoutlen = (int)FIPS_drbg_get_blocklength(dctx);
+ 			r = FIPS_drbg_instantiate(dctx, pers, perslen);
+ 			if (!r)
+ 				{
+--- fips/rsa/fips_rsastest.c	2015-11-16 13:45:23.000000000 -0800
++++ fips/rsa/fips_rsastest.c	2017-06-13 09:31:10.000000000 -0700
+@@ -275,7 +275,7 @@
+ 			bn_e = BN_new();
+ 			if (!bn_e || !BN_set_word(bn_e, 0x1001))
+ 				goto error;
+-			if (!RSA_X931_generate_key_ex(rsa, keylen, bn_e, NULL))
++			if (!RSA_fips_generate_key_ex(rsa, keylen, bn_e, NULL))
+ 				goto error;
+ 			BN_free(bn_e);
+ 			fputs("n = ", out);
+--- fips/rsa/fips_rsagtest.c	2015-11-16 13:45:23.000000000 -0800
++++ fips/rsa/fips_rsagtest.c	2017-06-13 09:31:10.000000000 -0700
+@@ -88,6 +88,13 @@
+ static int rsa_printkey2(FILE *out, RSA *rsa,
+ 		BIGNUM *Xq1, BIGNUM *Xq2, BIGNUM *Xq);
+ 
++static int rsa_printrandomkey(FILE *out, int keylen,
++        int is_B_3_6);
++static int rsa_printisprobableprime(FILE *out, 
++        BIGNUM *prandom, BIGNUM *e);
++static int probprime(FILE *out, BIGNUM *e,
++        BIGNUM *prandom, BIGNUM *qrandom);
++
+ #ifdef FIPS_ALGVS
+ int fips_rsagtest_main(int argc, char **argv)
+ #else
+@@ -105,7 +112,7 @@
+ 	else
+ 		in = fopen(argv[1], "r");
+ 
+-	if (argc < 2)
++	if (argc < 3)
+ 		out = stdout;
+ 	else
+ 		out = fopen(argv[2], "w");
+@@ -150,9 +157,10 @@
+ 	RSA *rsa = NULL;
+ 	BIGNUM *Xp1 = NULL, *Xp2 = NULL, *Xp = NULL;
+ 	BIGNUM *Xq1 = NULL, *Xq2 = NULL, *Xq = NULL;
+-	BIGNUM *e = NULL;
+-	int ret = 0;
++	BIGNUM *e = NULL, *prandom = NULL, *qrandom = NULL;
++	int ret = 0, keylen = 0, N = 0;
+ 	int lnum = 0;
++    int is_B_3_6 = 0;
+ 
+ 	olinebuf = OPENSSL_malloc(RSA_TEST_MAXLINELEN);
+ 	linebuf = OPENSSL_malloc(RSA_TEST_MAXLINELEN);
+@@ -165,6 +173,10 @@
+ 		lnum++;
+ 		strcpy(linebuf, olinebuf);
+ 		keyword = linebuf;
++
++        if (strchr(olinebuf, 0xff))
++            continue;
++
+ 		/* Skip leading space */
+ 		while (isspace((unsigned char)*keyword))
+ 			keyword++;
+@@ -172,8 +184,8 @@
+ 		/* Look for = sign */
+ 		p = strchr(linebuf, '=');
+ 
+-		/* If no = or starts with [ (for [foo = bar] line) just copy */
+-		if (!p || *keyword=='[')
++		/* If no '=' or starts with [ (for [foo = bar] line) just copy */
++		if (!p)
+ 			{
+ 			if (fputs(olinebuf, out) < 0)
+ 				goto error;
+@@ -196,10 +208,35 @@
+ 		/* Remove trailing space from value */
+ 		p = value + strlen(value) - 1;
+ 
+-		while (*p == '\n' || isspace((unsigned char)*p))
++		while (*p == 10 || *p == 13 || isspace((unsigned char)*p))
+ 			*p-- = 0;
+ 
+-		if (!strcmp(keyword, "xp1"))
++		/* Look for [mod = nnn] for key length */
++
++        if ('[' == *keyword)
++            {
++	            if (probprime(out, e, prandom, qrandom) != 2)
++	            {
++	                if (e)       { BN_free(e);             e = NULL; }
++	                if (qrandom) { BN_free(qrandom); qrandom = NULL; }
++	                if (prandom) { BN_free(prandom); prandom = NULL; }
++	            }
++            }
++		if (!strcmp(keyword, "[mod"))
++			{
++			p = value + strlen(value) - 1;
++			if (*p != ']')
++				goto parse_error;
++			*p = 0;
++			keylen = atoi(value);
++			if (keylen < 0)
++				goto parse_error;
++			}
++		else if (!strcmp(keyword, "[PrimeMethod") && !strcmp(value, "ProbPC]"))
++			{
++            is_B_3_6 = 1;
++			}
++		else if (!strcmp(keyword, "xp1"))
+ 			{
+ 			if (Xp1 || !do_hex2bn(&Xp1,value))
+ 				goto parse_error;
+@@ -231,7 +268,30 @@
+ 			}
+ 		else if (!strcmp(keyword, "e"))
+ 			{
+-			if (e || !do_hex2bn(&e,value))
++	            if (probprime(out, e, prandom, qrandom) != 2)
++	            {
++	                if (e)       { BN_free(e);             e = NULL; }
++	                if (qrandom) { BN_free(qrandom); qrandom = NULL; }
++	                if (prandom) { BN_free(prandom); prandom = NULL; }
++	            }
++			    if (!strcmp(keyword, "e"))
++			        if (!do_hex2bn(&e,value))
++				        goto parse_error;
++			}
++		else if (!strcmp(keyword, "prandom"))
++			{
++			if (prandom || !do_hex2bn(&prandom,value))
++				goto parse_error;
++			}
++		else if (!strcmp(keyword, "qrandom"))
++			{
++			if (qrandom || !do_hex2bn(&qrandom,value))
++				goto parse_error;
++			}
++		else if (!strcmp(keyword, "n") || !strcmp(keyword, "N"))
++			{
++			N = atoi(value);
++			if (N < 0)
+ 				goto parse_error;
+ 			}
+ 		else if (!strcmp(keyword, "p1"))
+@@ -250,10 +310,27 @@
+ 			continue;
+ 		else if (!strcmp(keyword, "d"))
+ 			continue;
++		else if (*keyword == '[')
++			{
++            if (fputs(olinebuf, out) < 0)
++                goto error;
++		    continue;
++			}
+ 		else
+ 			goto parse_error;
+ 
+-		fputs(olinebuf, out);
++        if (!strcasestr(olinebuf, "N = "))
++		    fputs(olinebuf, out);
++		
++		if (keylen != 0 && N > 0)
++		{
++			while (N > 0)
++		    {
++	            if (!rsa_printrandomkey(out, keylen, is_B_3_6))
++	                goto error;
++		        N--;
++		    }
++		}
+ 
+ 		if (e && Xp1 && Xp2 && Xp)
+ 			{
+@@ -285,7 +362,14 @@
+ 			FIPS_rsa_free(rsa);
+ 			rsa = NULL;
+ 			}
+-		}
++		} // end while
++
++	    if (probprime(out, e, prandom, qrandom) != 2)
++	    {
++	        if (e)       { BN_free(e);             e = NULL; }
++	        if (qrandom) { BN_free(qrandom); qrandom = NULL; }
++	        if (prandom) { BN_free(prandom); prandom = NULL; }
++	    }
+ 
+ 	ret = 1;
+ 
+@@ -310,6 +394,10 @@
+ 		BN_free(Xq2);
+ 	if (Xq)
+ 		BN_free(Xq);
++	if (prandom)
++	    BN_free(prandom);
++	if (qrandom)
++	    BN_free(qrandom);
+ 	if (e)
+ 		BN_free(e);
+ 	if (rsa)
+@@ -325,6 +413,172 @@
+ 
+ 	}
+ 
++static int probprime(FILE *out, BIGNUM *e,
++    BIGNUM *prandom, BIGNUM *qrandom)
++{
++    int rc = 0;
++    if (!e || !(prandom || qrandom))
++        return 2;
++    if (qrandom)
++        rc = rsa_printisprobableprime(out, qrandom, e);
++    else
++        rc = rsa_printisprobableprime(out, prandom, e);
++    return rc;
++}
++
++static int rsa_printisprobableprime(FILE *out, 
++    BIGNUM *prandom, BIGNUM *e)
++{
++	int r, bits = BN_num_bits(prandom);
++	int pi_tests, pq_tests;
++    
++    /* FIPS186-4 defines only 3 key sizes (1024, 2048 and 3072)
++     * Only 2048 and 3072 bit keys can be generated.
++     * Number of tests are given by table C.3
++     */
++    if (bits <= 1024)       /* 2048-bit key sizes */
++    {
++        pi_tests = 32;      /* pi M-R tests: 32 */
++        pq_tests = 4;       /* p & q M-R tests: 4 */
++    }
++    else if (bits <= 1536)  /* 3072-bit key sizes and up */
++    {
++        pi_tests = 27;      /* pi M-R tests: 27 */
++        pq_tests = 3;       /* p & q M-R tests: 3 */
++    }
++    else 
++    {
++		fprintf(stderr, "FATAL RSAGTEST invalid key length %d\n",bits);
++   
++        goto failed;
++    }
++    
++	/* Only odd e supported */
++	if (!BN_is_odd(e))
++		goto failed;
++		
++	r = FIPS_bn_is_prime_fasttest_ex(prandom, pq_tests, NULL, 1, NULL);
++
++    if (r == 0)
++		fputs("Result = F" RESP_EOL, out);
++	else
++		fputs("Result = P" RESP_EOL, out);
++	return 1;
++
++failed:
++    return 0;
++}
++
++static void print_bn(FILE *out, char *msg, BIGNUM *bn)
++{
++    fputs(msg, out);
++    do_bn_print(out, bn);
++    fputs(RESP_EOL, out);
++}
++
++// generation of random probable primes (B.3.3 or B.3.6)
++static int rsa_printrandomkey(FILE *out, int keylen, int is_B_3_6)
++{
++    int r = 0;
++    BIGNUM *e = NULL;
++	BIGNUM *Xp = NULL, *Xp1 = NULL, *Xp2 = NULL, *p1 = NULL, *p2 = NULL;
++	BIGNUM *Xq = NULL, *Xq1 = NULL, *Xq2 = NULL, *q1 = NULL, *q2 = NULL;
++	
++	BN_CTX *ctx = NULL;
++	RSA *rsa = FIPS_rsa_new();
++    if (!rsa)
++	    goto error;
++    e = BN_new();
++    if (!e || !BN_set_word(e, 0x10001))
++	    goto error;
++	
++	ctx = BN_CTX_new();
++	if (!ctx)
++		goto error;
++
++	BN_CTX_start(ctx);
++	
++	p1  = BN_CTX_get(ctx);
++	p2  = BN_CTX_get(ctx);
++	q1  = BN_CTX_get(ctx);
++	q2  = BN_CTX_get(ctx);
++	Xp  = BN_CTX_get(ctx);
++	Xq  = BN_CTX_get(ctx);
++	Xp1 = BN_CTX_get(ctx);
++	Xp2 = BN_CTX_get(ctx);
++	Xq1 = BN_CTX_get(ctx);
++	Xq2 = BN_CTX_get(ctx);
++	
++	if (!BN_fips_generate_Xpq(Xp, Xq, keylen, ctx))
++		goto error;
++
++	rsa->p = BN_new();
++	rsa->q = BN_new();
++	if (!rsa->p || !rsa->q)
++		goto error;
++
++	if (!BN_fips_generate_prime_ex(rsa->p, p1, p2, Xp1, Xp2, Xp,
++			e, ctx, NULL))
++		goto error;
++
++	if (!BN_fips_generate_prime_ex(rsa->q, q1, q2, Xq1, Xq2, Xq, 
++            e, ctx, NULL))
++		goto error;
++
++	/* Since rsa->p and rsa->q are valid this call will just derive
++	 * remaining RSA components.
++	 */
++
++	if (!RSA_fips_derive_ex(rsa, NULL, NULL, NULL, NULL,
++				NULL, NULL, NULL, NULL, NULL, NULL, e, NULL))
++		goto error;
++
++    if (is_B_3_6) {
++    	do_bn_print_name(out, "e", rsa->e);
++    	fprintf(out, "bitlen1 = %d"RESP_EOL, BN_num_bits(Xp1));
++    	do_bn_print_name(out, "Xp1", Xp1);
++    	fprintf(out, "bitlen2 = %d"RESP_EOL, BN_num_bits(Xp2));
++    	do_bn_print_name(out, "Xp2", Xp2);
++    	do_bn_print_name(out, "Xp", Xp);
++    	do_bn_print_name(out, "p", rsa->p);
++    	
++    	fprintf(out, "bitlen3 = %d"RESP_EOL, BN_num_bits(Xq1));
++    	do_bn_print_name(out, "Xq1", Xq1);
++    	fprintf(out, "bitlen4 = %d"RESP_EOL, BN_num_bits(Xq2));
++    	do_bn_print_name(out, "Xq2", Xq2);
++    	do_bn_print_name(out, "Xq", Xq);
++    	do_bn_print_name(out, "q", rsa->q);
++    	
++    	do_bn_print_name(out, "n", rsa->n);
++    	do_bn_print_name(out, "d", rsa->d);
++        fputs(RESP_EOL, out);
++        fputs(RESP_EOL, out);
++    } else {
++        // 186-4 B.3.3
++    	do_bn_print_name(out, "e", rsa->e);
++    	do_bn_print_name(out, "p", rsa->p);
++    	do_bn_print_name(out, "q", rsa->q);
++    	do_bn_print_name(out, "n", rsa->n);
++    	do_bn_print_name(out, "d", rsa->d);
++        fputs(RESP_EOL, out);
++    }
++    
++    r = 1;
++    
++error:
++    if (e)
++        BN_free(e);
++    if (rsa)
++	    FIPS_rsa_free(rsa);
++	if (ctx)
++	{
++		BN_CTX_end(ctx);
++		BN_CTX_free(ctx);
++	}
++
++	return r;
++}
++
+ static int rsa_printkey1(FILE *out, RSA *rsa,
+ 		BIGNUM *Xp1, BIGNUM *Xp2, BIGNUM *Xp,
+ 		BIGNUM *e)
+@@ -336,7 +590,7 @@
+ 	if (!p1 || !p2)
+ 		goto error;
+ 
+-	if (!RSA_X931_derive_ex(rsa, p1, p2, NULL, NULL, Xp1, Xp2, Xp,
++	if (!RSA_fips_derive_ex(rsa, p1, p2, NULL, NULL, Xp1, Xp2, Xp,
+ 						NULL, NULL, NULL, e, NULL))
+ 		goto error;
+ 
+@@ -365,7 +619,7 @@
+ 	if (!q1 || !q2)
+ 		goto error;
+ 
+-	if (!RSA_X931_derive_ex(rsa, NULL, NULL, q1, q2, NULL, NULL, NULL,
++	if (!RSA_fips_derive_ex(rsa, NULL, NULL, q1, q2, NULL, NULL, NULL,
+ 						Xq1, Xq2, Xq, NULL, NULL))
+ 		goto error;
+ 
+--- fips/tools/declarations.dat	2015-11-16 13:45:24.000000000 -0800
++++ fips/tools/declarations.dat	2017-06-13 09:31:10.000000000 -0700
+@@ -1930,7 +1930,7 @@
+                                                 'type' => 'const RAND_METHOD *?',
+                                                 'oldsym' => 'FIPS_rand_get_method'
+                                               },
+-                    'FIPS_rsa_x931_generate_key_ex' => {
++                    'FIPS_rsa_fips_generate_key_ex' => {
+                                                          'params' => [
+                                                                        {
+                                                                          'direction' => '<-? <->?',
+@@ -1967,10 +1967,10 @@
+                                                                      ],
+                                                          'objfile' => './crypto/rsa/rsa_x931g.[o|c]',
+                                                          'kind' => 1,
+-                                                         'symcomment' => '(renames RSA_X931_generate_key_ex)',
+-                                                         'sym' => 'FIPS_rsa_x931_generate_key_ex',
++                                                         'symcomment' => '(renames RSA_fips_generate_key_ex)',
++                                                         'sym' => 'FIPS_rsa_fips_generate_key_ex',
+                                                          'type' => 'int ?',
+-                                                         'oldsym' => 'RSA_X931_generate_key_ex'
++                                                         'oldsym' => 'RSA_fips_generate_key_ex'
+                                                        },
+                     'FIPS_ec_key_set_asn1_flag' => {
+                                                      'params' => [
+@@ -2666,7 +2666,7 @@
+                                                 'type' => 'const EVP_CIPHER *?',
+                                                 'oldsym' => 'EVP_des_ede_ofb'
+                                               },
+-                    'FIPS_bn_x931_generate_xpq' => {
++                    'FIPS_bn_fips_generate_xpq' => {
+                                                      'params' => [
+                                                                    {
+                                                                      'direction' => '<-? <->?',
+@@ -2703,12 +2703,12 @@
+                                                                  ],
+                                                      'objfile' => './crypto/bn/bn_x931p.[o|c]',
+                                                      'kind' => 1,
+-                                                     'symcomment' => '(renames BN_X931_generate_Xpq)',
+-                                                     'sym' => 'FIPS_bn_x931_generate_xpq',
++                                                     'symcomment' => '(renames BN_fips_generate_Xpq)',
++                                                     'sym' => 'FIPS_bn_fips_generate_xpq',
+                                                      'type' => 'int ?',
+-                                                     'oldsym' => 'BN_X931_generate_Xpq'
++                                                     'oldsym' => 'BN_fips_generate_Xpq'
+                                                    },
+-                    'FIPS_x931_test_mode' => {
++                    'FIPS_fips_test_mode' => {
+                                                'params' => [],
+                                                'objfile' => './fips/rand/fips_rand.[o|c]',
+                                                'kind' => 1,
+@@ -3356,7 +3356,7 @@
+                                                    'type' => 'const EVP_CIPHER *?',
+                                                    'oldsym' => 'EVP_des_ede3_cfb64'
+                                                  },
+-                    'FIPS_rsa_x931_derive_ex' => {
++                    'FIPS_rsa_fips_derive_ex' => {
+                                                    'params' => [
+                                                                  {
+                                                                    'direction' => '<-? <->?',
+@@ -3465,10 +3465,10 @@
+                                                                ],
+                                                    'objfile' => './crypto/rsa/rsa_x931g.[o|c]',
+                                                    'kind' => 1,
+-                                                   'symcomment' => '(renames RSA_X931_derive_ex)',
+-                                                   'sym' => 'FIPS_rsa_x931_derive_ex',
++                                                   'symcomment' => '(renames RSA_fips_derive_ex)',
++                                                   'sym' => 'FIPS_rsa_fips_derive_ex',
+                                                    'type' => 'int ?',
+-                                                   'oldsym' => 'RSA_X931_derive_ex'
++                                                   'oldsym' => 'RSA_fips_derive_ex'
+                                                  },
+                     'FIPS_ec_method_get_field_type' => {
+                                                          'params' => [
+@@ -3985,7 +3985,7 @@
+                                             'type' => 'int ?',
+                                             'oldsym' => 'RAND_status'
+                                           },
+-                    'FIPS_bn_x931_derive_prime_ex' => {
++                    'FIPS_bn_fips_derive_prime_ex' => {
+                                                         'params' => [
+                                                                       {
+                                                                         'direction' => '<-? <->?',
+@@ -4062,10 +4062,10 @@
+                                                                     ],
+                                                         'objfile' => './crypto/bn/bn_x931p.[o|c]',
+                                                         'kind' => 1,
+-                                                        'symcomment' => '(renames BN_X931_derive_prime_ex)',
+-                                                        'sym' => 'FIPS_bn_x931_derive_prime_ex',
++                                                        'symcomment' => '(renames BN_fips_derive_prime_ex)',
++                                                        'sym' => 'FIPS_bn_fips_derive_prime_ex',
+                                                         'type' => 'int ?',
+-                                                        'oldsym' => 'BN_X931_derive_prime_ex'
++                                                        'oldsym' => 'BN_fips_derive_prime_ex'
+                                                       },
+                     'FIPS_ecdsa_sig_new' => {
+                                               'params' => [],
+@@ -6513,7 +6513,7 @@
+                                                     'type' => 'void ?',
+                                                     'oldsym' => 'EC_GROUP_clear_free'
+                                                   },
+-                    'FIPS_bn_x931_generate_prime_ex' => {
++                    'FIPS_bn_fips_generate_prime_ex' => {
+                                                           'params' => [
+                                                                         {
+                                                                           'direction' => '<-? <->?',
+@@ -6590,10 +6590,10 @@
+                                                                       ],
+                                                           'objfile' => './crypto/bn/bn_x931p.[o|c]',
+                                                           'kind' => 1,
+-                                                          'symcomment' => '(renames BN_X931_generate_prime_ex)',
+-                                                          'sym' => 'FIPS_bn_x931_generate_prime_ex',
++                                                          'symcomment' => '(renames BN_fips_generate_prime_ex)',
++                                                          'sym' => 'FIPS_bn_fips_generate_prime_ex',
+                                                           'type' => 'int ?',
+-                                                          'oldsym' => 'BN_X931_generate_prime_ex'
++                                                          'oldsym' => 'BN_fips_generate_prime_ex'
+                                                         },
+                     'FIPS_ec_key_set_enc_flags' => {
+                                                      'params' => [
+--- util/libeay.num	2015-11-16 13:45:25.000000000 -0800
++++ util/libeay.num	2017-06-13 09:31:10.000000000 -0700
+@@ -2882,11 +2882,11 @@
+ RSA_padding_add_X931                    3322	EXIST::FUNCTION:RSA
+ RSA_padding_add_PKCS1_PSS               3323	EXIST::FUNCTION:RSA
+ PKCS1_MGF1                              3324	EXIST::FUNCTION:RSA
+-BN_X931_generate_Xpq                    3325	EXIST::FUNCTION:
+-RSA_X931_generate_key                   3326	NOEXIST::FUNCTION:
+-BN_X931_derive_prime                    3327	NOEXIST::FUNCTION:
+-BN_X931_generate_prime                  3328	NOEXIST::FUNCTION:
+-RSA_X931_derive                         3329	NOEXIST::FUNCTION:
++BN_fips_generate_Xpq                    3325	EXIST::FUNCTION:
++RSA_fips_generate_key                   3326	NOEXIST::FUNCTION:
++BN_fips_derive_prime                    3327	NOEXIST::FUNCTION:
++BN_fips_generate_prime                  3328	NOEXIST::FUNCTION:
++RSA_fips_derive                         3329	NOEXIST::FUNCTION:
+ BIO_new_dgram                           3330	EXIST::FUNCTION:
+ BN_get0_nist_prime_384                  3331	EXIST::FUNCTION:
+ ERR_set_mark                            3332	EXIST::FUNCTION:
+@@ -3664,18 +3664,18 @@
+ FIPS_rand_status                        4051	NOEXIST::FUNCTION:
+ FIPS_rand_set_key                       4052	NOEXIST::FUNCTION:
+ CRYPTO_set_mem_info_functions           4053	NOEXIST::FUNCTION:
+-RSA_X931_generate_key_ex                4054	EXIST::FUNCTION:RSA
++RSA_fips_generate_key_ex                4054	EXIST::FUNCTION:RSA
+ int_ERR_set_state_func                  4055	NOEXIST::FUNCTION:
+ int_EVP_MD_set_engine_callbacks         4056	NOEXIST::FUNCTION:
+ int_CRYPTO_set_do_dynlock_callback      4057	NOEXIST::FUNCTION:
+ FIPS_rng_stick                          4058	NOEXIST::FUNCTION:
+ EVP_CIPHER_CTX_set_flags                4059	EXIST::FUNCTION:
+-BN_X931_generate_prime_ex               4060	EXIST::FUNCTION:
++BN_fips_generate_prime_ex               4060	EXIST::FUNCTION:
+ FIPS_selftest_check                     4061	EXIST:OPENSSL_FIPS:FUNCTION:
+ FIPS_rand_set_dt                        4062	NOEXIST::FUNCTION:
+ CRYPTO_dbg_pop_info                     4063	NOEXIST::FUNCTION:
+ FIPS_dsa_free                           4064	EXIST:OPENSSL_FIPS:FUNCTION:DSA
+-RSA_X931_derive_ex                      4065	EXIST::FUNCTION:RSA
++RSA_fips_derive_ex                      4065	EXIST::FUNCTION:RSA
+ FIPS_rsa_new                            4066	EXIST:OPENSSL_FIPS:FUNCTION:
+ FIPS_rand_bytes                         4067	NOEXIST::FUNCTION:
+ fips_cipher_test                        4068	EXIST:OPENSSL_FIPS:FUNCTION:
+@@ -3695,7 +3695,7 @@
+ FIPS_rand_reset                         4082	NOEXIST::FUNCTION:
+ FIPS_dsa_new                            4083	EXIST:OPENSSL_FIPS:FUNCTION:DSA
+ int_RAND_set_callbacks                  4084	NOEXIST::FUNCTION:
+-BN_X931_derive_prime_ex                 4085	EXIST::FUNCTION:
++BN_fips_derive_prime_ex                 4085	EXIST::FUNCTION:
+ int_ERR_lib_init                        4086	NOEXIST::FUNCTION:
+ int_EVP_CIPHER_init_engine_callbacks    4087	NOEXIST::FUNCTION:
+ FIPS_rsa_free                           4088	EXIST:OPENSSL_FIPS:FUNCTION:
